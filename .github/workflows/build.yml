@@ -1,6 +1,8 @@
 name: build.yml
 on:
   push:
+    branches:
+      - main
     paths-ignore:
       - compose.yml
       - .gitignore
