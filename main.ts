@@ -22,6 +22,8 @@ if (poToken === undefined || poToken === '') {
     process.exit(1);
 }
 
+const cobaltUrl = Bun.env.COBALT_URL ?? 'http://localhost:9000';
+
 const innertube = await Innertube.create({
     lang: 'en',
     location: 'US',
@@ -61,7 +63,7 @@ async function runCmd(cmd: string[]): Promise<number> {
 }
 
 async function dl(id: string, metadata: Metadata): Promise<string> {
-    const resp = await fetch('http://localhost:9000', {
+    const resp = await fetch(cobaltUrl, {
         method: 'POST',
         headers: {
             'accept': 'application/json',
