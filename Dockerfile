@@ -13,7 +13,7 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
-RUN apt update -y && apt install ffmpeg
+RUN apt update -y && apt install ffmpeg -y
 
 COPY --from=builder /app/server ./server
 
