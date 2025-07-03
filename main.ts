@@ -5,6 +5,23 @@ import {Hono} from "hono";
 import type {JwtVariables} from 'hono/jwt';
 import {jwt} from 'hono/jwt';
 
+const secret = Bun.env.JWT_SECRET;
+if (secret === undefined || secret === '') {
+    console.error('Missing JWT_SECRET');
+    process.exit(1);
+}
+
+const visitorData = Bun.env.VISITOR_DATA;
+if (visitorData === undefined || visitorData === '') {
+    console.error('Missing VISITOR_DATA');
+    process.exit(1);
+}
+const poToken = Bun.env.PO_TOKEN;
+if (poToken === undefined || poToken === '') {
+    console.error('Missing PO_TOKEN');
+    process.exit(1);
+}
+
 const innertube = await Innertube.create({
     lang: 'en',
     location: 'US',
@@ -12,6 +29,8 @@ const innertube = await Innertube.create({
     enable_safety_mode: false,
     generate_session_locally: false,
     enable_session_cache: true,
+    visitor_data: visitorData,
+    po_token: poToken,
     device_category: 'desktop',
     cookie: '',
     cache: new UniversalCache(
@@ -23,11 +42,94 @@ const innertube = await Innertube.create({
 type Variables = JwtVariables;
 const app = new Hono<{ Variables: Variables }>();
 
-const secret = Bun.env.JWT_SECRET;
-if (secret === undefined || secret === '') {
-    console.error('Missing JWT_SECRET');
-    process.exit(1);
+interface Metadata {
+    length: number;
+    title: string;
+    authors: string;
+    thumbnail: string;
+    album: string;
 }
+
+async function runCmd(cmd: string[]): Promise<number> {
+    const ffmpeg = Bun.spawn({
+        cmd: cmd,
+        stdout: 'inherit',
+        stderr: 'inherit',
+    });
+
+    return await ffmpeg.exited;
+}
+
+async function dl(id: string, metadata: Metadata): Promise<string> {
+    const resp = await fetch('http://localhost:9000', {
+        method: 'POST',
+        headers: {
+            'accept': 'application/json',
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            url: 'https://youtube.com/watch?v='+id,
+            audioFormat: 'best',
+            downloadMode: 'audio',
+            filenameStyle: 'basic',
+            disableMetadata: false,
+            alwaysProxy: false,
+            localProcessing: false,
+        })
+    });
+
+    const data = await resp.json() as {
+        status: string,
+        url: string,
+        filename: string,
+    };
+
+    console.log(data);
+
+    const fixedFile = `./dl/${id}/audio.m4a`;
+
+    const audioCmd = [
+        'ffmpeg',
+        '-y',
+        '-i', data.url,
+        '-i', metadata.thumbnail, '-map', '0', '-map', '1', '-disposition:v:0', 'attached_pic', // set cover
+        '-c:a', 'aac',
+        '-vn',
+        '-t', metadata.length.toString(),
+        '-metadata', `title="${metadata.title}"`,
+        '-metadata', `artist="${metadata.authors}"`,
+        '-metadata', `album="${metadata.album}"`,
+        fixedFile,
+    ];
+
+    console.log(audioCmd.join(' '));
+
+    const audio = await runCmd(audioCmd);
+
+    console.log(`${id} audio downloaded`);
+
+    const hlsCmd = [
+        'ffmpeg',
+        '-y',
+        '-i', fixedFile,
+        '-c:a', 'aac',
+        '-f', 'hls',
+        '-vn',
+        '-t', metadata.length.toString(),
+        '-hls_playlist_type', 'vod',
+        '-hls_segment_filename', `./dl/${id}/segment_%03d.ts`,
+        `./dl/${id}/hls.m3u8`
+    ];
+
+    console.log(hlsCmd.join(' '));
+
+    const hls = await runCmd(hlsCmd);
+
+    console.log(`${id}: audio - ${audio}, hls - ${hls}`);
+
+    return data.filename;
+}
+
 async function search(query: string): Promise<{
     id: string | undefined;
     title: string | undefined;
@@ -44,27 +146,38 @@ async function search(query: string): Promise<{
         return [];
     }
 
-    return search.songs.contents.slice(0, 5).map(song => {
-        const artists = song.artists?.map(x => x.name).join(', ');
-        const durationSec = song.duration?.seconds!;
+    return await Promise.all(search.songs.contents.map(async song => {
+        const artists = song.artists?.map(x => x.name).join(', ')!;
+        const cover = song.thumbnail?.contents[song.thumbnails!.length - 1]?.url!;
+        const info = await innertube.getInfo(song.id!);
+        const duration = info.basic_info.duration!;
         const explicit = song.badges?.find(item => {
             const badge = item as MusicInlineBadge;
             return badge.icon_type === 'MUSIC_EXPLICIT_BADGE';
         }) !== undefined;
 
-        return {
-            id: song.id,
-            title: song.title,
+        const manifest = {
+            id: song.id!,
+            title: song.title!,
             authors: artists,
-            thumbnail: song.thumbnail?.contents[song.thumbnails!.length - 1]?.url,
-            length: durationSec,
-            explicit: explicit
+            album: song.album?.name!,
+            thumbnail: cover,
+            length: duration,
+            explicit: explicit,
+        };
+
+        await Bun.write(`./dl/${song.id!}/manifest.json`, JSON.stringify(manifest));
+
+        if (duration < 300) {
+            dl(song.id!, manifest);
         }
-    });
+
+        return manifest;
+    }));
 }
 
 app.use(
-    '/api/search',
+    '/api/*',
     jwt({
         secret: secret,
     })
@@ -81,8 +194,6 @@ app.get('/api/search', async (c) => {
     try {
         const result = await search(query);
 
-        console.log(result);
-
         return c.json(result);
     } catch (error) {
         console.error(error);
@@ -92,5 +203,46 @@ app.get('/api/search', async (c) => {
         })
     }
 });
+
+app.get('/api/dl', async (c) => {
+    const id = c.req.query('id');
+    if (id === '' || id === undefined) {
+        return c.json({});
+    }
+
+    console.log(`Received dl request for id: ${id}`);
+
+    const metaFile = Bun.file(`./dl/${id}/manifest.json`);
+
+    const metadata = await metaFile.json() as Metadata;
+
+    await dl(id, metadata);
+
+    return c.json({})
+});
+
+app.get('/api/dl/:id/:file', async (c) => {
+    const id = c.req.param('id');
+    if (id === '' || id === undefined) {
+        return c.json({});
+    }
+
+    const file = c.req.param('file');
+    if (file === '' || file === undefined) {
+        return c.json({});
+    }
+
+    file.replaceAll('..', '');
+
+    const blob = Bun.file(`./dl/${id}/${file}`);
+    const arrbuf = await blob.arrayBuffer();
+    const buffer = Buffer.from(arrbuf);
+
+    return c.body(buffer, {
+        headers: {
+            'Content-Type': 'application/octet-stream',
+        }
+    });
+})
 
 export default app

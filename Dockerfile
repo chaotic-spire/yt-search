@@ -13,6 +13,8 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
+RUN apt update -y && apt install ffmpeg
+
 COPY --from=builder /app/server ./server
 
 EXPOSE 3000
