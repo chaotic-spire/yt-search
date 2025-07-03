@@ -11,17 +11,6 @@ if (secret === undefined || secret === '') {
     process.exit(1);
 }
 
-const visitorData = Bun.env.VISITOR_DATA;
-if (visitorData === undefined || visitorData === '') {
-    console.error('Missing VISITOR_DATA');
-    process.exit(1);
-}
-const poToken = Bun.env.PO_TOKEN;
-if (poToken === undefined || poToken === '') {
-    console.error('Missing PO_TOKEN');
-    process.exit(1);
-}
-
 const cobaltUrl = Bun.env.COBALT_URL ?? 'http://localhost:9000';
 
 const innertube = await Innertube.create({
@@ -31,8 +20,6 @@ const innertube = await Innertube.create({
     enable_safety_mode: false,
     generate_session_locally: false,
     enable_session_cache: true,
-    visitor_data: visitorData,
-    po_token: poToken,
     device_category: 'desktop',
     cookie: '',
     cache: new UniversalCache(
@@ -50,6 +37,13 @@ interface Metadata {
     authors: string;
     thumbnail: string;
     album: string;
+    filename: string;
+}
+
+interface CobaltData {
+    status: string;
+    url: string;
+    filename: string;
 }
 
 async function runCmd(cmd: string[]): Promise<number> {
@@ -62,7 +56,7 @@ async function runCmd(cmd: string[]): Promise<number> {
     return await ffmpeg.exited;
 }
 
-async function dl(id: string, metadata: Metadata): Promise<string> {
+async function getCobalt(id: string): Promise<CobaltData> {
     const resp = await fetch(cobaltUrl, {
         method: 'POST',
         headers: {
@@ -80,11 +74,15 @@ async function dl(id: string, metadata: Metadata): Promise<string> {
         })
     });
 
-    const data = await resp.json() as {
+    return await resp.json() as {
         status: string,
         url: string,
         filename: string,
     };
+}
+
+async function dl(id: string, metadata: Metadata): Promise<void> {
+    const data = await getCobalt(id);
 
     console.log(data);
 
@@ -128,8 +126,6 @@ async function dl(id: string, metadata: Metadata): Promise<string> {
     const hls = await runCmd(hlsCmd);
 
     console.log(`${id}: audio - ${audio}, hls - ${hls}`);
-
-    return data.filename;
 }
 
 async function search(query: string): Promise<{
@@ -169,10 +165,6 @@ async function search(query: string): Promise<{
         };
 
         await Bun.write(`./dl/${song.id!}/manifest.json`, JSON.stringify(manifest));
-
-        if (duration < 300) {
-            dl(song.id!, manifest);
-        }
 
         return manifest;
     }));
@@ -217,6 +209,9 @@ app.get('/api/dl', async (c) => {
     const metaFile = Bun.file(`./dl/${id}/manifest.json`);
 
     const metadata = await metaFile.json() as Metadata;
+    const data = await getCobalt(id);
+    metadata.filename = data.filename;
+    await Bun.write(`./dl/${id}/manifest.json`, JSON.stringify(metadata));
 
     await dl(id, metadata);
 
