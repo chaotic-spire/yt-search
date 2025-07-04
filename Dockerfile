@@ -3,9 +3,9 @@ FROM oven/bun:1 AS builder
 WORKDIR /app
 
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+RUN bun install
 
-COPY main.ts main.ts
+COPY . .
 
 RUN bun build main.ts --compile --outfile server
 
