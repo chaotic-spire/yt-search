@@ -1,15 +1,12 @@
-# backend-youtube
+# Innertube connector
 
-To install dependencies:
+This repo contains REST API for interacting with Youtube Music internal API.
 
-```bash
+# Running
+```shell
+docker compose -f dev-compose.yml up -d
+
 bun install
+
+bun run dev
 ```
-
-To run:
-
-```bash
-bun run main.ts
-```
-
-This project was created using `bun init` in bun v1.2.16. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
